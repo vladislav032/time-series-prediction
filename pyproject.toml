@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=42", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "time-series-prediction"
+version = "0.1.0"
+authors = [{name = "Vladislav", email = "velikiy6789@gmail.com"}]
+description = "Library for time series forecasting using ML models."
+readme = "README.md"
+requires-python = ">=3.8"
+license = {text = "AGPL-3.0"}
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: GNU Affero General Public License v3",
+    "Intended Audience :: Science/Research",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+[project.urls]
+Homepage = "https://github.com/vladislav032/time-series-prediction"
+Documentation = "https://github.com/vladislav032/time-series-prediction#readme"
+Repository = "https://github.com/vladislav032/time-series-prediction.git"
