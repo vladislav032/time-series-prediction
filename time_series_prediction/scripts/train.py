@@ -41,6 +41,10 @@ class MinMaxNormalization(INormalizationStrategy):
         normalized = 2 * (data - min_val) / (max_val - min_val) - 1
         return normalized, min_val, max_val
     
+    def normalize_with_existing_params(self, data: np.ndarray, min_val: np.ndarray, max_val: np.ndarray) -> np.ndarray:
+        """Normalize data using precomputed min and max values."""
+        return 2 * (data - min_val) / (max_val - min_val) - 1
+    
     def denormalize(self, data: np.ndarray, min_val: np.ndarray, max_val: np.ndarray) -> np.ndarray:
         return (data + 1) * (max_val - min_val) / 2 + min_val
 
@@ -157,7 +161,7 @@ class ModelRepository:
     
     def load_model(self, model: nn.Module, model_id: int) -> nn.Module:
         """Load model state from disk."""
-        model.load_state_dict(torch.load(os.path.join(self.output_dir, f'model_{model_id}.pth')))
+        model.load_state_dict(torch.load(os.path.join(self.output_dir, f'model_{model_id}.pth'), weights_only=True))
         return model
 
 
@@ -245,75 +249,90 @@ class TimeSeriesModelTrainer:
     
     def train_and_save_models(self, target_accuracy: float = 0.80, max_epochs: int = 1000) -> None:
         """Train multiple models and save them to disk."""
-        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        self.logger.log(f'Using device: {device}')
-        
-        for i in range(self.n_models):
-            model = self._build_model().to(device)
+        try:
+            device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+            self.logger.log(f'Using device: {device}')
+            torch.cuda.empty_cache()
             
-            start_time = time.time()
-            self.logger.log(f'Training model {i+1}')
-            
-            self.model_trainer.train_model(
-                model=model,
-                X=self.X,
-                y=self.y,
-                target_accuracy=target_accuracy,
-                max_epochs=max_epochs,
-                device=device
-            )
-            
-            end_time = time.time()
-            elapsed_time = end_time - start_time
-            
-            self.model_repository.save_model(model, i+1)
-            self.logger.log(f'Model {i+1} saved in {elapsed_time:.2f} s', Fore.YELLOW)
+            for i in range(self.n_models):
+                model = self._build_model().to(device)
+                
+                start_time = time.time()
+                self.logger.log(f'Training model {i+1}')
+                
+                self.model_trainer.train_model(
+                    model=model,
+                    X=self.X,
+                    y=self.y,
+                    target_accuracy=target_accuracy,
+                    max_epochs=max_epochs,
+                    device=device
+                )
+                
+                end_time = time.time()
+                elapsed_time = end_time - start_time
+                
+                self.model_repository.save_model(model, i+1)
+                self.logger.log(f'Model {i+1} saved in {elapsed_time:.2f} s', Fore.YELLOW)
+
+        except torch.cuda.CudaError as e:
+            self.logger.log(f"CUDA Error: {e}. Switching to CPU for debugging.", Fore.RED)
+            device = torch.device('cpu')
+            for i in range(self.n_models):
+                model = self._build_model().to(device)
+                self.logger.log(f'Re-training model {i+1} on CPU.')
+                self.model_trainer.train_model(
+                    model=model,
+                    X=self.X,
+                    y=self.y,
+                    target_accuracy=target_accuracy,
+                    max_epochs=max_epochs,
+                    device=device
+                )
+        finally:
+            torch.cuda.empty_cache()
     
     def continue_training(self, new_df: pd.DataFrame, target_accuracy: float = 0.80, max_epochs: int = 1000) -> None:
         """
         Continue training with additional data from a new DataFrame.
-        
-        Args:
-            new_df: New DataFrame containing additional time series data
-            target_accuracy: Target accuracy to reach
-            max_epochs: Maximum number of training epochs
         """
-        # Normalize new data using existing parameters
-        new_time_series = new_df[self.column_names].values
-        normalized_new_time_series = self.normalization_strategy.normalize(
-            new_time_series, self.min_val, self.max_val
-        )
-        
-        # Combine with existing data
-        self.normalized_time_series = np.concatenate(
-            (self.normalized_time_series, normalized_new_time_series),
-            axis=0
-        )
-        
-        # Recreate datasets
-        self._create_datasets()
-        
-        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        self.logger.log(f'Using device: {device}')
-        
-        for i in range(self.n_models):
-            model = self._build_model().to(device)
-            model = self.model_repository.load_model(model, i+1)
-            
-            start_time = time.time()
-            self.logger.log(f'Continuing training for model {i+1}')
-            
-            self.model_trainer.train_model(
-                model=model,
-                X=self.X,
-                y=self.y,
-                target_accuracy=target_accuracy,
-                max_epochs=max_epochs,
-                device=device
+        try:
+            new_time_series = new_df[self.column_names].values
+            normalized_new_time_series = self.normalization_strategy.normalize_with_existing_params(
+                new_time_series, self.min_val, self.max_val
             )
             
-            end_time = time.time()
-            elapsed_time = end_time - start_time
-            
-            self.model_repository.save_model(model, i+1)
-            self.logger.log(f'Model {i+1} re-saved in {elapsed_time:.2f} s', Fore.YELLOW)
+            self.normalized_time_series = np.concatenate(
+                (self.normalized_time_series, normalized_new_time_series),
+                axis=0
+            )
+
+            self._create_datasets()
+
+            device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+            self.logger.log(f'Using device: {device}')
+
+            for i in range(self.n_models):
+                model = self._build_model().to(device)
+                model = self.model_repository.load_model(model, i+1)
+
+                start_time = time.time()
+                self.logger.log(f'Continuing training for model {i+1}')
+
+                self.model_trainer.train_model(
+                    model=model,
+                    X=self.X,
+                    y=self.y,
+                    target_accuracy=target_accuracy,
+                    max_epochs=max_epochs,
+                    device=device
+                )
+
+                end_time = time.time()
+                elapsed_time = end_time - start_time
+
+                self.model_repository.save_model(model, i+1)
+                self.logger.log(f'Model {i+1} re-saved in {elapsed_time:.2f} s', Fore.YELLOW)
+        except torch.cuda.CudaError as e:
+            self.logger.log(f"CUDA Error during continue_training: {e}. Switching to CPU.", Fore.RED)
+            self.continue_training(new_df, target_accuracy, max_epochs)
